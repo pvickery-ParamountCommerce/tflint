@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"fmt"
+	"log"
 	"os"
+	"strings"
 
 	"github.com/fatih/color"
 	"github.com/spf13/afero"
@@ -17,19 +19,24 @@ func (cli *CLI) init(opts Options) int {
 		return ExitCodeError
 	}
 
+	var builder strings.Builder
+
 	if opts.Recursive {
 		fmt.Fprint(cli.outStream, "Installing plugins on each working directory...\n\n")
 	}
 
+	installed := false
 	for _, wd := range workingDirs {
+		builder.Reset()
 		err := cli.withinChangedDir(wd, func() error {
 			if opts.Recursive {
-				fmt.Fprint(cli.outStream, "====================================================\n")
-				fmt.Fprintf(cli.outStream, "working directory: %s\n\n", wd)
+				builder.WriteString("====================================================\n")
+				builder.WriteString(fmt.Sprintf("working directory: %s\n\n", wd))
 			}
 
 			cfg, err := tflint.LoadConfig(afero.Afero{Fs: afero.NewOsFs()}, opts.Config)
 			if err != nil {
+				fmt.Fprint(cli.outStream, builder.String())
 				return fmt.Errorf("Failed to load TFLint config; %w", err)
 			}
 
@@ -45,6 +52,8 @@ func (cli *CLI) init(opts Options) int {
 
 				_, err := plugin.FindPluginPath(installCfg)
 				if os.IsNotExist(err) {
+					installed = true
+					fmt.Fprint(cli.outStream, builder.String())
 					fmt.Fprintf(cli.outStream, "Installing \"%s\" plugin...\n", pluginCfg.Name)
 
 					sigchecker := plugin.NewSignatureChecker(installCfg)
@@ -62,14 +71,28 @@ func (cli *CLI) init(opts Options) int {
 				}
 
 				if err != nil {
+					fmt.Fprint(cli.outStream, builder.String())
 					return fmt.Errorf("Failed to find a plugin; %w", err)
 				}
 
+				if opts.Recursive {
+					builder.WriteString(fmt.Sprintf("Plugin \"%s\" is already installed\n", pluginCfg.Name))
+					continue
+				}
 				fmt.Fprintf(cli.outStream, "Plugin \"%s\" is already installed\n", pluginCfg.Name)
+
 			}
 
 			if opts.Recursive && !found {
-				fmt.Fprint(cli.outStream, "No plugins to install\n")
+				builder.WriteString("No plugins to install\n")
+			}
+
+			// If there are no changes, send logs to debug
+			prefix := "[DEBUG]   "
+			lines := strings.Split(builder.String(), "\n")
+
+			for _, line := range lines {
+				log.Printf("%s%s", prefix, line)
 			}
 
 			return nil
@@ -78,6 +101,9 @@ func (cli *CLI) init(opts Options) int {
 			cli.formatter.Print(tflint.Issues{}, err, map[string][]byte{})
 			return ExitCodeError
 		}
+	}
+	if opts.Recursive && !installed {
+		fmt.Fprint(cli.outStream, "All plugins are already installed\n")
 	}
 
 	return ExitCodeOK
